@@ -1,154 +1,162 @@
 import streamlit as st
-import os
 import requests
-import cloudinary
-import cloudinary.uploader
+import os
 from fpdf import FPDF
 import arabic_reshaper
 from bidi.algorithm import get_display
-from io import BytesIO
-from PIL import Image
 
-# =========================
-# PAGE CONFIG
-# =========================
-st.set_page_config(
-    page_title="Neuro-Sortie (Vision AI)",
-    layout="centered"
-)
+# --- 1. CONFIGURATION & FONTS ---
 
-# =========================
-# ENV VARIABLES
-# =========================
-N8N_WEBHOOK = os.getenv("https://drchoulli.app.n8n.cloud/webhook-test/neuroassistant-vision")
-cloudinary.config(
-    cloud_name=os.getenv("dg7wbulwt"),
-    api_key=os.getenv("249434414629186"),
-    api_secret=os.getenv("ruC39Cwcem43hdeJFF2U6M3u5Go"),
-    secure=True
-)
+# Récupération de l'URL n8n depuis les secrets
+# Si vous testez en local, remplacez os.environ.get par votre URL entre guillemets
+N8N_URL = os.environ.get("https://drchoulli.app.n8n.cloud/webhook-test/neuroassistant-vision")
 
-# =========================
-# FONT SETUP
-# =========================
-FONT_URL = "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Regular.ttf"
-FONT_PATH = "Amiri-Regular.ttf"
+# Gestion de la police Arabe (Indispensable pour le PDF)
+# Le script télécharge la police "Amiri" si elle n'est pas présente
+font_path = "Amiri-Regular.ttf"
+if not os.path.exists(font_path):
+    url = "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Regular.ttf"
+    try:
+        response = requests.get(url)
+        with open(font_path, "wb") as f:
+            f.write(response.content)
+    except Exception as e:
+        st.error(f"Erreur téléchargement police: {e}")
 
-if not os.path.exists(FONT_PATH):
-    r = requests.get(FONT_URL)
-    with open(FONT_PATH, "wb") as f:
-        f.write(r.content)
+# --- 2. FONCTION DE COMMUNICATION AVEC N8N ---
 
-# =========================
-# PDF CLASS
-# =========================
-class ArabicPDF(FPDF):
-    def __init__(self):
-        super().__init__()
-        self.add_font("Amiri", "", FONT_PATH, uni=True)
-        self.set_font("Amiri", "", 14)
+def call_n8n(text_input=None, uploaded_file=None, language="Français"):
+    """
+    Envoie les données à n8n via une requête Multipart (Standard HTTP).
+    Cela permet d'envoyer l'image sans l'encoder en Base64 (plus léger).
+    """
+    
+    # Préparation des données textuelles
+    data_payload = {
+        "text_input": text_input if text_input else "Analyse ce document.",
+        "language": language
+    }
+    
+    files_payload = {}
+    
+    # Si une image est fournie
+    if uploaded_file:
+        # On rembobine le fichier (sécurité)
+        uploaded_file.seek(0)
+        # Format: 'nom_champ_n8n': (nom_fichier, contenu, type_mime)
+        # Note: 'data' est le nom du champ binaire qu'on a configuré dans n8n
+        files_payload = {
+            'data': (uploaded_file.name, uploaded_file, uploaded_file.type)
+        }
 
-    def rtl(self, text):
-        return get_display(arabic_reshaper.reshape(text))
+    try:
+        if not N8N_URL:
+            return "Erreur: URL N8N manquante dans les Secrets."
 
-    def write_rtl(self, text):
-        self.multi_cell(0, 10, self.rtl(text))
+        # Envoi de la requête
+        response = requests.post(N8N_URL, data=data_payload, files=files_payload)
+        response.raise_for_status() # Lève une erreur si n8n renvoie 400/500
+        
+        # Extraction du résultat JSON
+        # On suppose que n8n renvoie { "result": "Le texte généré..." }
+        return response.json().get("result", "Erreur: Réponse vide de n8n")
+        
+    except Exception as e:
+        return f"Erreur technique de connexion : {str(e)}"
 
-def generate_pdf(text, language):
-    pdf = ArabicPDF()
+# --- 3. GÉNÉRATEUR PDF (COMPATIBLE ARABE) ---
+
+def create_pdf(text_content):
+    """
+    Génère un PDF en gérant l'écriture de Droite-à-Gauche (RTL) pour l'Arabe/Darija
+    """
+    pdf = FPDF()
     pdf.add_page()
+    
+    # Configuration de la police
+    try:
+        pdf.add_font('Amiri', '', font_path, uni=True)
+        pdf.set_font("Amiri", size=12)
+    except:
+        # Fallback si la police n'a pas pu être chargée
+        st.warning("Police Arabe non chargée, le texte risque d'être illisible.")
+        pdf.set_font("Arial", size=12)
 
-    if language in ["Arabe Classique", "Darija (Maroc)"]:
-        pdf.write_rtl(text)
-    else:
-        pdf.multi_cell(0, 10, text)
+    # Traitement ligne par ligne
+    # FPDF ne gère pas le RTL nativement, on utilise arabic_reshaper et bidi
+    lines = text_content.split('\n')
+    
+    for line in lines:
+        try:
+            # 1. Reshape : Lie les lettres arabes entre elles correctement
+            reshaped_text = arabic_reshaper.reshape(line)
+            # 2. Bidi : Inverse l'ordre pour l'affichage RTL
+            bidi_text = get_display(reshaped_text)
+            
+            # Align='R' force l'alignement à droite (standard en Arabe)
+            pdf.multi_cell(0, 10, txt=bidi_text, align='R')
+        except:
+            # Si une ligne pose problème (ex: caractères spéciaux), on l'imprime telle quelle
+            pdf.multi_cell(0, 10, txt=line)
+            
+    return pdf.output(dest='S').encode('latin-1')
 
-    buffer = BytesIO()
-    pdf.output(buffer)
-    buffer.seek(0)
-    return buffer
+# --- 4. INTERFACE UTILISATEUR (STREAMLIT) ---
 
-# =========================
-# CLOUDINARY UPLOAD
-# =========================
-def upload_to_cloudinary(file):
-    result = cloudinary.uploader.upload(
-        file,
-        folder="neuroassistant_crh",
-        resource_type="image"
+st.set_page_config(page_title="Neuro-Assistant", page_icon="🧠")
+
+st.title("🧠 Neuro-Assistant (Sortie Patient)")
+st.caption("Générateur de guides de sortie via IA (Architecture n8n)")
+
+# -- Zone de Gauche (Configuration) --
+with st.sidebar:
+    st.header("Paramètres")
+    langue = st.selectbox(
+        "Langue de sortie",
+        ["Français", "Darija (Maroc)", "Arabe Classique"]
     )
-    return result["secure_url"]
+    st.info("ℹ️ Darija inclura l'écriture Arabizi et Arabe.")
 
-# =========================
-# STREAMLIT UI
-# =========================
-st.title("🧠 Neuro-Sortie (Vision AI)")
-
-mode = st.radio("Input type", ["Text Input", "Camera/Image Upload"])
-
-language = st.selectbox(
-    "Language",
-    ["Français", "Darija (Maroc)", "Arabe Classique"]
-)
-
-model = st.selectbox(
-    "Model",
-    ["gpt-4o", "gpt-4o-mini"]
-)
+# -- Zone Principale (Input) --
+st.subheader("Source du Dossier Médical (CRH)")
+input_method = st.radio("Choisir le format :", ["📷 Photo (Upload)", "📝 Texte (Copier-Coller)"], horizontal=True)
 
 text_input = ""
-image_url = ""
+uploaded_file = None
 
-if mode == "Text Input":
-    text_input = st.text_area("Paste CRH or medical report", height=250)
+if input_method == "📝 Texte (Copier-Coller)":
+    text_input = st.text_area("Collez le texte du CRH ici :", height=200, placeholder="Patient opéré d'une hernie discale...")
 else:
-    uploaded = st.file_uploader(
-        "Upload CRH Image",
-        type=["jpg", "jpeg", "png"]
-    )
+    uploaded_file = st.file_uploader("Chargez la photo du CRH", type=["jpg", "jpeg", "png"])
+    if uploaded_file:
+        st.image(uploaded_file, caption="Aperçu du document", width=300)
 
-    if uploaded:
-        st.image(uploaded, caption="Uploaded CRH", use_column_width=True)
-        with st.spinner("Uploading securely..."):
-            image_url = upload_to_cloudinary(uploaded)
-
-# =========================
-# GENERATE PDF ACTION
-# =========================
-if st.button("📄 Generate PDF", use_container_width=True):
-
-    if mode == "Text Input" and not text_input.strip():
-        st.error("Please provide medical text.")
-        st.stop()
-
-    if mode == "Camera/Image Upload" and not image_url:
-        st.error("Please upload an image.")
-        st.stop()
-
-    payload = {
-        "input_type": "image" if image_url else "text",
-        "language": language,
-        "model": model,
-        "image_url": image_url,
-        "text": text_input
-    }
-
-    with st.spinner("Analyzing medical data..."):
-        try:
-            response = requests.post(N8N_WEBHOOK, json=payload)
-            response.raise_for_status()
-            patient_text = response.json()["patient_guide"]
-        except Exception as e:
-            st.error(f"Error contacting AI backend: {e}")
-            st.stop()
-
-        pdf = generate_pdf(patient_text, language)
-
-    st.success("Patient Exit Guide Generated")
-
-    st.download_button(
-        "⬇️ Download PDF",
-        pdf,
-        file_name="Neuro_Sortie_Patient.pdf",
-        mime="application/pdf"
-    )
+# -- Bouton d'Action --
+if st.button("🚀 Analyser et Générer le Guide"):
+    
+    # Vérification que l'utilisateur a mis quelque chose
+    has_content = (input_method == "📝 Texte (Copier-Coller)" and text_input) or \
+                  (input_method == "📷 Photo (Upload)" and uploaded_file)
+                  
+    if not has_content:
+        st.warning("Veuillez fournir un texte ou une image avant de lancer l'analyse.")
+    else:
+        with st.spinner("Transmission à n8n (Cloudinary + OpenAI)..."):
+            # Appel Backend
+            result_text = call_n8n(text_input, uploaded_file, language=langue)
+            
+            # Affichage Résultat
+            st.success("Analyse terminée !")
+            st.markdown("---")
+            st.subheader("Aperçu du Guide :")
+            st.text_area("Résultat modifiable", value=result_text, height=400)
+            
+            # Génération PDF
+            pdf_bytes = create_pdf(result_text)
+            
+            st.download_button(
+                label="📥 Télécharger le PDF (Compatible Arabe)",
+                data=pdf_bytes,
+                file_name="Guide_Sortie_Patient.pdf",
+                mime="application/pdf"
+            )
