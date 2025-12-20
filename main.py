@@ -38,7 +38,7 @@ def call_n8n(text_input=None, uploaded_file=None, language="Français"):
     
     # 1. Préparation des données textuelles
     data_payload = {
-        "text_input": text_input if text_input else "Analyse ce document.",
+        "text_input": text_input if text_input else "Voici l'url de l'image du CRH",
         "language": language
     }
     
