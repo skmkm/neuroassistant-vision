@@ -7,9 +7,14 @@ from bidi.algorithm import get_display
 
 # --- 1. CONFIGURATION & FONTS ---
 
-# Récupération de l'URL n8n depuis les secrets
-# Si vous testez en local, remplacez os.environ.get par votre URL entre guillemets
-N8N_URL = os.environ.get("https://drchoulli.app.n8n.cloud/webhook-test/neuroassistant-vision")
+# Configuration de l'URL n8n
+# On cherche d'abord dans les secrets Streamlit, sinon on utilise l'URL de test fournie
+DEFAULT_URL = "https://drchoulli.app.n8n.cloud/webhook-test/neuroassistant-vision"
+
+if "N8N_WEBHOOK_URL" in st.secrets:
+    N8N_URL = st.secrets["N8N_WEBHOOK_URL"]
+else:
+    N8N_URL = DEFAULT_URL
 
 # Gestion de la police Arabe (Indispensable pour le PDF)
 # Le script télécharge la police "Amiri" si elle n'est pas présente
@@ -27,11 +32,11 @@ if not os.path.exists(font_path):
 
 def call_n8n(text_input=None, uploaded_file=None, language="Français"):
     """
-    Envoie les données à n8n via une requête Multipart (Standard HTTP).
-    Cela permet d'envoyer l'image sans l'encoder en Base64 (plus léger).
+    Envoie les données à n8n via une requête Multipart.
+    C'est ici que l'image part vers n8n pour être uploadée sur CLOUDINARY.
     """
     
-    # Préparation des données textuelles
+    # 1. Préparation des données textuelles
     data_payload = {
         "text_input": text_input if text_input else "Analyse ce document.",
         "language": language
@@ -39,30 +44,31 @@ def call_n8n(text_input=None, uploaded_file=None, language="Français"):
     
     files_payload = {}
     
-    # Si une image est fournie
+    # 2. Gestion de l'image pour Cloudinary
+    # Si une image est fournie, on l'envoie en binaire brut (Multipart)
     if uploaded_file:
-        # On rembobine le fichier (sécurité)
+        # On rembobine le fichier pour être sûr de lire depuis le début
         uploaded_file.seek(0)
-        # Format: 'nom_champ_n8n': (nom_fichier, contenu, type_mime)
-        # Note: 'data' est le nom du champ binaire qu'on a configuré dans n8n
+        
+        # IMPORTANT : C'est ce bloc qui permet à n8n de recevoir le fichier
+        # et de l'envoyer au nœud Cloudinary.
+        # Le champ s'appelle 'data' pour correspondre à la config n8n.
         files_payload = {
             'data': (uploaded_file.name, uploaded_file, uploaded_file.type)
         }
 
     try:
-        if not N8N_URL:
-            return "Erreur: URL N8N manquante dans les Secrets."
-
-        # Envoi de la requête
+        # Envoi de la requête POST vers votre Webhook n8n
         response = requests.post(N8N_URL, data=data_payload, files=files_payload)
-        response.raise_for_status() # Lève une erreur si n8n renvoie 400/500
         
-        # Extraction du résultat JSON
-        # On suppose que n8n renvoie { "result": "Le texte généré..." }
+        # Vérification des erreurs HTTP (404, 500...)
+        response.raise_for_status() 
+        
+        # Extraction du résultat JSON renvoyé par le dernier nœud de n8n
         return response.json().get("result", "Erreur: Réponse vide de n8n")
         
     except Exception as e:
-        return f"Erreur technique de connexion : {str(e)}"
+        return f"Erreur technique de connexion n8n : {str(e)}"
 
 # --- 3. GÉNÉRATEUR PDF (COMPATIBLE ARABE) ---
 
@@ -82,21 +88,20 @@ def create_pdf(text_content):
         st.warning("Police Arabe non chargée, le texte risque d'être illisible.")
         pdf.set_font("Arial", size=12)
 
-    # Traitement ligne par ligne
-    # FPDF ne gère pas le RTL nativement, on utilise arabic_reshaper et bidi
+    # Traitement ligne par ligne pour le support RTL
     lines = text_content.split('\n')
     
     for line in lines:
         try:
-            # 1. Reshape : Lie les lettres arabes entre elles correctement
+            # 1. Reshape : Lie les lettres arabes entre elles
             reshaped_text = arabic_reshaper.reshape(line)
             # 2. Bidi : Inverse l'ordre pour l'affichage RTL
             bidi_text = get_display(reshaped_text)
             
-            # Align='R' force l'alignement à droite (standard en Arabe)
+            # Align='R' force l'alignement à droite
             pdf.multi_cell(0, 10, txt=bidi_text, align='R')
         except:
-            # Si une ligne pose problème (ex: caractères spéciaux), on l'imprime telle quelle
+            # Si erreur sur une ligne, on l'affiche telle quelle
             pdf.multi_cell(0, 10, txt=line)
             
     return pdf.output(dest='S').encode('latin-1')
@@ -106,7 +111,7 @@ def create_pdf(text_content):
 st.set_page_config(page_title="Neuro-Assistant", page_icon="🧠")
 
 st.title("🧠 Neuro-Assistant (Sortie Patient)")
-st.caption("Générateur de guides de sortie via IA (Architecture n8n)")
+st.caption("Générateur de guides de sortie via n8n & Cloudinary")
 
 # -- Zone de Gauche (Configuration) --
 with st.sidebar:
@@ -116,6 +121,8 @@ with st.sidebar:
         ["Français", "Darija (Maroc)", "Arabe Classique"]
     )
     st.info("ℹ️ Darija inclura l'écriture Arabizi et Arabe.")
+    st.markdown("---")
+    st.text(f"Connecté à : {N8N_URL.split('/')[2]}...")
 
 # -- Zone Principale (Input) --
 st.subheader("Source du Dossier Médical (CRH)")
@@ -141,7 +148,7 @@ if st.button("🚀 Analyser et Générer le Guide"):
     if not has_content:
         st.warning("Veuillez fournir un texte ou une image avant de lancer l'analyse.")
     else:
-        with st.spinner("Transmission à n8n (Cloudinary + OpenAI)..."):
+        with st.spinner("Envoi à n8n -> Upload Cloudinary -> Analyse GPT-4o..."):
             # Appel Backend
             result_text = call_n8n(text_input, uploaded_file, language=langue)
             
@@ -149,7 +156,7 @@ if st.button("🚀 Analyser et Générer le Guide"):
             st.success("Analyse terminée !")
             st.markdown("---")
             st.subheader("Aperçu du Guide :")
-            st.text_area("Résultat modifiable", value=result_text, height=400)
+            st.text_area("Résultat", value=result_text, height=400)
             
             # Génération PDF
             pdf_bytes = create_pdf(result_text)
