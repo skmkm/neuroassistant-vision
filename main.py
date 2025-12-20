@@ -20,11 +20,11 @@ st.set_page_config(
 # =========================
 # ENV VARIABLES
 # =========================
-N8N_WEBHOOK = os.getenv("N8N_WEBHOOK_URL")
+N8N_WEBHOOK = os.getenv("https://drchoulli.app.n8n.cloud/webhook-test/neuroassistant-vision")
 cloudinary.config(
-    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
-    api_key=os.getenv("CLOUDINARY_API_KEY"),
-    api_secret=os.getenv("CLOUDINARY_API_SECRET"),
+    cloud_name=os.getenv("dg7wbulwt"),
+    api_key=os.getenv("249434414629186"),
+    api_secret=os.getenv("ruC39Cwcem43hdeJFF2U6M3u5Go"),
     secure=True
 )
 
