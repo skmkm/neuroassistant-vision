@@ -9,7 +9,7 @@ from bidi.algorithm import get_display
 
 # Configuration de l'URL n8n
 # On cherche d'abord dans les secrets Streamlit, sinon on utilise l'URL de test fournie
-DEFAULT_URL = "https://drchoulli.app.n8n.cloud/webhook-test/neuroassistant-vision"
+DEFAULT_URL = "https://drchoulli.app.n8n.cloud/webhook/neuroassistant-vision"
 
 if "N8N_WEBHOOK_URL" in st.secrets:
     N8N_URL = st.secrets["N8N_WEBHOOK_URL"]
@@ -111,7 +111,7 @@ def create_pdf(text_content):
 st.set_page_config(page_title="Neuro-Assistant", page_icon="🧠")
 
 st.title("🧠 Neuro-Assistant (Sortie Patient)")
-st.caption("Générateur de guides de sortie via n8n & Cloudinary")
+st.caption("Générateur de guides de sortie via n8n & Cloudinary - By Dr. CHOULLI")
 
 # -- Zone de Gauche (Configuration) --
 with st.sidebar:
