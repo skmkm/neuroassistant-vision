@@ -1,33 +1,25 @@
 import streamlit as st
 import requests
 import os
-from reportlab.lib.pagesizes import A4
-from reportlab.lib import colors
-from reportlab.lib.units import cm
-from reportlab.pdfgen import canvas
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Paragraph
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_RIGHT, TA_LEFT, TA_CENTER
+from fpdf import FPDF
 import arabic_reshaper
 from bidi.algorithm import get_display
-from io import BytesIO
-import re
+from datetime import datetime
 
 # --- 1. CONFIGURATION & FONTS ---
 
-DEFAULT_URL = "https://drchoulli.app.n8n.cloud/webhook/neuroassistant-vision"
+# Config Page Streamlit
+st.set_page_config(page_title="Neuro-Assistant", page_icon="🧠", layout="centered")
 
+# URL n8n
+DEFAULT_URL = "https://drchoulli.app.n8n.cloud/webhook/neuroassistant-vision"
 if "N8N_WEBHOOK_URL" in st.secrets:
     N8N_URL = st.secrets["N8N_WEBHOOK_URL"]
 else:
     N8N_URL = DEFAULT_URL
 
-# Téléchargement de la police Arabe
+# Téléchargement Police Arabe (Amiri)
 font_path = "Amiri-Regular.ttf"
-font_bold_path = "Amiri-Bold.ttf"
-
 if not os.path.exists(font_path):
     url = "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Regular.ttf"
     try:
@@ -37,25 +29,128 @@ if not os.path.exists(font_path):
     except Exception as e:
         st.error(f"Erreur téléchargement police: {e}")
 
-if not os.path.exists(font_bold_path):
-    url_bold = "https://github.com/google/fonts/raw/main/ofl/amiri/Amiri-Bold.ttf"
-    try:
-        response = requests.get(url_bold)
-        with open(font_bold_path, "wb") as f:
-            f.write(response.content)
-    except Exception as e:
-        pass  # Bold est optionnel
+# --- 2. CONFIGURATION DES COULEURS (DESIGN) ---
+COLOR_PRIMARY = (0, 51, 102)     # Bleu Roi (Titres)
+COLOR_ACCENT = (23, 162, 184)    # Cyan (Lignes)
+COLOR_WARNING = (220, 53, 69)    # Rouge (Alertes)
+COLOR_TEXT = (50, 50, 50)        # Gris Foncé (Texte)
 
-# --- 2. FONCTION DE COMMUNICATION AVEC N8N ---
+# --- 3. CLASSE PDF PERSONNALISÉE (HEADER/FOOTER) ---
+class PDF(FPDF):
+    def header(self):
+        # Titre Principal
+        try:
+            self.add_font('Amiri', '', font_path, uni=True)
+            self.set_font('Amiri', '', 20)
+        except:
+            self.set_font('Arial', 'B', 18)
+            
+        self.set_text_color(*COLOR_PRIMARY)
+        self.cell(0, 10, "Service de Neurochirurgie", ln=True, align='C')
+        
+        # Sous-titre
+        self.set_font_size(12)
+        self.set_text_color(100, 100, 100) # Gris
+        self.cell(0, 6, "Guide de Sortie Patient / ورقة خروج", ln=True, align='C')
+        
+        # Ligne de séparation
+        self.ln(5)
+        self.set_draw_color(*COLOR_ACCENT)
+        self.set_line_width(0.5)
+        self.line(10, 32, 200, 32)
+        self.ln(10) # Espace après le header
 
-def call_n8n(text_input=None, uploaded_file=None, language="Français"):
-    """Envoie les données à n8n via une requête Multipart."""
+    def footer(self):
+        self.set_y(-15)
+        try:
+            self.set_font('Amiri', '', 9)
+        except:
+            self.set_font('Arial', 'I', 8)
+        self.set_text_color(128)
+        
+        # Gauche : Dr Choulli
+        self.cell(0, 10, 'Dr. CHOULLI - Neurochirurgie', 0, 0, 'L')
+        # Droite : Page number
+        self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'R')
+
+# --- 4. FONCTION DE GÉNÉRATION INTELLIGENTE ---
+def create_pdf(text_content):
+    pdf = PDF()
+    pdf.add_page()
     
+    # Chargement Police
+    try:
+        pdf.add_font('Amiri', '', font_path, uni=True)
+    except:
+        pass
+
+    # Date du document
+    date_jour = datetime.now().strftime("%d/%m/%Y")
+    pdf.set_font("Amiri", "", 10)
+    pdf.set_text_color(100, 100, 100)
+    pdf.cell(0, 5, f"Date: {date_jour}", ln=True, align='R')
+    pdf.ln(5)
+
+    # Analyse ligne par ligne pour le style
+    lines = text_content.split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        if not line: continue
+        
+        # --- STYLE: TITRES DE SECTION (Détectés par **) ---
+        if "**" in line and (line[0].isdigit() or len(line) < 60):
+            clean_line = line.replace('**', '').replace(':', '')
+            
+            # Traitement Arabe
+            reshaped = arabic_reshaper.reshape(clean_line)
+            bidi_text = get_display(reshaped)
+            
+            pdf.ln(6)
+            # Fond coloré
+            pdf.set_fill_color(*COLOR_PRIMARY) 
+            pdf.set_text_color(255, 255, 255) # Blanc
+            pdf.set_font("Amiri", "", 14)
+            
+            # Affichage du bandeau
+            pdf.cell(0, 9, bidi_text, ln=True, align='R', fill=True)
+            
+            # Reset
+            pdf.set_text_color(*COLOR_TEXT)
+            pdf.ln(2)
+
+        # --- STYLE: ALERTES (Détectées par ⚠️ ou URGENCE) ---
+        elif "⚠️" in line or "URGENCE" in line.upper():
+            reshaped = arabic_reshaper.reshape(line)
+            bidi_text = get_display(reshaped)
+            
+            pdf.set_text_color(*COLOR_WARNING) # Rouge
+            pdf.set_font("Amiri", "", 12)
+            pdf.multi_cell(0, 8, txt=bidi_text, align='R')
+            pdf.set_text_color(*COLOR_TEXT) # Reset
+
+        # --- STYLE: TEXTE NORMAL ---
+        else:
+            reshaped = arabic_reshaper.reshape(line)
+            bidi_text = get_display(reshaped)
+            
+            pdf.set_font("Amiri", "", 12)
+            
+            # Indentation pour les listes
+            if line.startswith("-") or line.startswith("*"):
+                 # Petite astuce : on ajoute un espace visuel
+                 pass 
+            
+            pdf.multi_cell(0, 7, txt=bidi_text, align='R')
+
+    return pdf.output(dest='S').encode('latin-1')
+
+# --- 5. FONCTION APPEL N8N ---
+def call_n8n(text_input=None, uploaded_file=None, language="Français"):
     data_payload = {
         "text_input": text_input if text_input else "",
         "language": language
     }
-    
     files_payload = {}
     
     if uploaded_file:
@@ -68,333 +163,61 @@ def call_n8n(text_input=None, uploaded_file=None, language="Français"):
         response = requests.post(N8N_URL, data=data_payload, files=files_payload)
         response.raise_for_status() 
         return response.json().get("result", "Erreur: Réponse vide de n8n")
-        
     except Exception as e:
-        return f"Erreur technique de connexion n8n : {str(e)}"
+        return f"Erreur connexion n8n : {str(e)}"
 
-# --- 3. GÉNÉRATEUR PDF MODERNE ET ÉLÉGANT ---
+# --- 6. INTERFACE UI ---
 
-def create_beautiful_pdf(text_content, language="Français"):
-    """Génère un PDF moderne avec design professionnel"""
-    
-    buffer = BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
-    
-    # Enregistrer les polices
-    try:
-        pdfmetrics.registerFont(TTFont('Amiri', font_path))
-        if os.path.exists(font_bold_path):
-            pdfmetrics.registerFont(TTFont('Amiri-Bold', font_bold_path))
-        has_arabic_font = True
-    except:
-        has_arabic_font = False
-    
-    is_arabic = "Arabe" in language or "Darija" in language
-    
-    # === HEADER DESIGN ===
-    def draw_header():
-        # Bande de couleur gradient en haut
-        c.setFillColor(colors.HexColor('#2C3E50'))
-        c.rect(0, height - 3*cm, width, 3*cm, fill=1, stroke=0)
-        
-        # Titre principal
-        c.setFillColor(colors.white)
-        if has_arabic_font and is_arabic:
-            c.setFont("Amiri-Bold" if os.path.exists(font_bold_path) else "Amiri", 20)
-        else:
-            c.setFont("Helvetica-Bold", 20)
-        
-        title = "دليل الخروج من المستشفى" if is_arabic else "GUIDE DE SORTIE"
-        c.drawCentredString(width/2, height - 1.5*cm, title)
-        
-        # Sous-titre
-        c.setFont("Helvetica", 10)
-        c.drawCentredString(width/2, height - 2*cm, "Service de Neurochirurgie")
-        
-        # Logo ou icône (simulé avec un cercle)
-        c.setFillColor(colors.HexColor('#3498DB'))
-        c.circle(2*cm, height - 1.5*cm, 0.6*cm, fill=1, stroke=0)
-        c.setFillColor(colors.white)
-        c.setFont("Helvetica-Bold", 16)
-        c.drawCentredString(2*cm, height - 1.7*cm, "🧠")
-    
-    # === FOOTER DESIGN ===
-    def draw_footer(page_num):
-        c.setStrokeColor(colors.HexColor('#3498DB'))
-        c.setLineWidth(2)
-        c.line(2*cm, 2*cm, width - 2*cm, 2*cm)
-        
-        c.setFillColor(colors.HexColor('#7F8C8D'))
-        c.setFont("Helvetica", 8)
-        c.drawCentredString(width/2, 1.5*cm, f"Page {page_num} - Document confidentiel")
-        c.drawString(2*cm, 1.5*cm, "🏥 CHU Hassan II")
-    
-    # === TRAITEMENT DU CONTENU ===
-    draw_header()
-    
-    # Marges et position initiale
-    margin_left = 2*cm
-    margin_right = width - 2*cm
-    y_position = height - 4*cm
-    line_height = 0.5*cm
-    page_num = 1
-    
-    lines = text_content.split('\n')
-    
-    for line in lines:
-        # Gestion du changement de page
-        if y_position < 3*cm:
-            draw_footer(page_num)
-            c.showPage()
-            page_num += 1
-            draw_header()
-            y_position = height - 4*cm
-        
-        line = line.strip()
-        
-        if not line:
-            y_position -= line_height * 0.5
-            continue
-        
-        # === DÉTECTION DES TITRES ET SECTIONS ===
-        
-        # Titre principal (Guide de Sortie)
-        if "Guide de Sortie" in line or "دليل الخروج" in line:
-            c.setFillColor(colors.HexColor('#2C3E50'))
-            if has_arabic_font and is_arabic:
-                c.setFont("Amiri-Bold" if os.path.exists(font_bold_path) else "Amiri", 16)
-            else:
-                c.setFont("Helvetica-Bold", 16)
-            
-            if is_arabic:
-                reshaped = arabic_reshaper.reshape(line)
-                bidi = get_display(reshaped)
-                c.drawRightString(margin_right, y_position, bidi)
-            else:
-                c.drawString(margin_left, y_position, line)
-            
-            y_position -= line_height * 2
-            continue
-        
-        # Sections numérotées (1., 2., 3., 4.)
-        if re.match(r'^[1-4]\.\s', line):
-            # Boîte colorée pour les sections
-            section_colors = {
-                '1.': '#3498DB',  # Bleu
-                '2.': '#27AE60',  # Vert
-                '3.': '#E74C3C',  # Rouge
-                '4.': '#F39C12'   # Orange
-            }
-            
-            section_num = line[0]
-            color = section_colors.get(f"{section_num}.", '#3498DB')
-            
-            # Barre latérale colorée
-            c.setFillColor(colors.HexColor(color))
-            c.rect(margin_left - 0.3*cm, y_position - 0.2*cm, 0.2*cm, 0.6*cm, fill=1, stroke=0)
-            
-            # Texte de section
-            c.setFillColor(colors.HexColor(color))
-            if has_arabic_font and is_arabic:
-                c.setFont("Amiri-Bold" if os.path.exists(font_bold_path) else "Amiri", 14)
-            else:
-                c.setFont("Helvetica-Bold", 14)
-            
-            if is_arabic:
-                reshaped = arabic_reshaper.reshape(line)
-                bidi = get_display(reshaped)
-                c.drawRightString(margin_right, y_position, bidi)
-            else:
-                c.drawString(margin_left + 0.2*cm, y_position, line)
-            
-            y_position -= line_height * 1.8
-            continue
-        
-        # Sous-sections avec tirets ou puces
-        if line.startswith('-') or line.startswith('•') or line.startswith('*'):
-            c.setFillColor(colors.HexColor('#34495E'))
-            if has_arabic_font and is_arabic:
-                c.setFont("Amiri", 11)
-            else:
-                c.setFont("Helvetica", 11)
-            
-            # Puce graphique
-            c.setFillColor(colors.HexColor('#3498DB'))
-            if is_arabic:
-                c.circle(margin_right - 0.3*cm, y_position + 0.15*cm, 0.08*cm, fill=1)
-            else:
-                c.circle(margin_left + 0.3*cm, y_position + 0.15*cm, 0.08*cm, fill=1)
-            
-            c.setFillColor(colors.HexColor('#34495E'))
-            clean_line = line.lstrip('-•* ')
-            
-            if is_arabic:
-                reshaped = arabic_reshaper.reshape(clean_line)
-                bidi = get_display(reshaped)
-                c.drawRightString(margin_right - 0.6*cm, y_position, bidi)
-            else:
-                c.drawString(margin_left + 0.6*cm, y_position, clean_line)
-            
-            y_position -= line_height * 1.2
-            continue
-        
-        # Mots-clés importants (ATTENTION, ALERTE, etc.)
-        if any(keyword in line.upper() for keyword in ['ATTENTION', 'ALERTE', 'IMPORTANT', 'URGENCE', 'WARNING']):
-            # Fond d'alerte
-            c.setFillColor(colors.HexColor('#FFEBEE'))
-            c.roundRect(margin_left - 0.3*cm, y_position - 0.1*cm, 
-                       margin_right - margin_left + 0.6*cm, 0.5*cm, 
-                       0.1*cm, fill=1, stroke=0)
-            
-            c.setFillColor(colors.HexColor('#C0392B'))
-            if has_arabic_font and is_arabic:
-                c.setFont("Amiri-Bold" if os.path.exists(font_bold_path) else "Amiri", 11)
-            else:
-                c.setFont("Helvetica-Bold", 11)
-            
-            if is_arabic:
-                reshaped = arabic_reshaper.reshape(line)
-                bidi = get_display(reshaped)
-                c.drawRightString(margin_right, y_position, bidi)
-            else:
-                c.drawString(margin_left, y_position, line)
-            
-            y_position -= line_height * 1.5
-            continue
-        
-        # Questions (Q:)
-        if line.startswith('Q:') or line.startswith('Q :'):
-            c.setFillColor(colors.HexColor('#2980B9'))
-            if has_arabic_font and is_arabic:
-                c.setFont("Amiri-Bold" if os.path.exists(font_bold_path) else "Amiri", 11)
-            else:
-                c.setFont("Helvetica-Bold", 11)
-            
-            if is_arabic:
-                reshaped = arabic_reshaper.reshape(line)
-                bidi = get_display(reshaped)
-                c.drawRightString(margin_right, y_position, bidi)
-            else:
-                c.drawString(margin_left, y_position, line)
-            
-            y_position -= line_height * 1.2
-            continue
-        
-        # Réponses (R:)
-        if line.startswith('R:') or line.startswith('R :'):
-            c.setFillColor(colors.HexColor('#16A085'))
-            if has_arabic_font and is_arabic:
-                c.setFont("Amiri", 11)
-            else:
-                c.setFont("Helvetica", 11)
-            
-            if is_arabic:
-                reshaped = arabic_reshaper.reshape(line)
-                bidi = get_display(reshaped)
-                c.drawRightString(margin_right - 0.5*cm, y_position, bidi)
-            else:
-                c.drawString(margin_left + 0.5*cm, y_position, line)
-            
-            y_position -= line_height * 1.2
-            continue
-        
-        # Texte normal
-        c.setFillColor(colors.HexColor('#2C3E50'))
-        if has_arabic_font and is_arabic:
-            c.setFont("Amiri", 11)
-        else:
-            c.setFont("Helvetica", 11)
-        
-        try:
-            if is_arabic:
-                reshaped = arabic_reshaper.reshape(line)
-                bidi = get_display(reshaped)
-                c.drawRightString(margin_right, y_position, bidi)
-            else:
-                # Gestion du text wrapping pour le français
-                max_width = margin_right - margin_left
-                if c.stringWidth(line, "Helvetica", 11) > max_width:
-                    words = line.split()
-                    current_line = ""
-                    for word in words:
-                        test_line = current_line + " " + word if current_line else word
-                        if c.stringWidth(test_line, "Helvetica", 11) <= max_width:
-                            current_line = test_line
-                        else:
-                            c.drawString(margin_left, y_position, current_line)
-                            y_position -= line_height
-                            current_line = word
-                    if current_line:
-                        c.drawString(margin_left, y_position, current_line)
-                else:
-                    c.drawString(margin_left, y_position, line)
-        except:
-            c.drawString(margin_left, y_position, line[:80])
-        
-        y_position -= line_height
-    
-    # Footer de la dernière page
-    draw_footer(page_num)
-    
-    c.save()
-    buffer.seek(0)
-    return buffer.getvalue()
+st.title("🧠 Neuro-Assistant")
+st.caption("Générateur de guides de sortie | Dr. CHOULLI")
 
-# --- 4. INTERFACE UTILISATEUR (STREAMLIT) ---
-
-st.set_page_config(page_title="Neuro-Assistant", page_icon="🧠")
-
-st.title("🧠 Neuro-Assistant (Sortie Patient)")
-st.caption("Générateur de guides de sortie via n8n & Cloudinary - By Dr. CHOULLI")
-
+# Sidebar
 with st.sidebar:
     st.header("Paramètres")
-    langue = st.selectbox(
-        "Langue de sortie",
-        ["Français", "Darija (Maroc)", "Arabe Classique"]
-    )
-    st.info("ℹ️ Darija inclura l'écriture Arabizi et Arabe.")
+    langue = st.selectbox("Langue", ["Français", "Darija (Maroc)", "Arabe Classique"])
+    st.info("💡 Darija inclut l'écriture Arabizi et Arabe.")
     st.markdown("---")
-    st.text(f"Connecté à : {N8N_URL.split('/')[2]}...")
+    st.success("Système Connecté ✅")
 
-st.subheader("Source du Dossier Médical (CRH)")
-input_method = st.radio("Choisir le format :", ["📷 Photo (Upload)", "📝 Texte (Copier-Coller)"], horizontal=True)
+# Input
+input_method = st.radio("Source", ["📷 Photo (Upload)", "📝 Texte (Copier-Coller)"], horizontal=True)
 
 text_input = ""
 uploaded_file = None
 
 if input_method == "📝 Texte (Copier-Coller)":
-    text_input = st.text_area("Collez le texte du CRH ici :", height=200, placeholder="Patient opéré d'une hernie discale...")
+    text_input = st.text_area("Collez le CRH ici :", height=200)
 else:
-    uploaded_file = st.file_uploader("Chargez la photo du CRH", type=["jpg", "jpeg", "png"])
+    uploaded_file = st.file_uploader("Photo du CRH", type=["jpg", "jpeg", "png"])
     if uploaded_file:
-        st.image(uploaded_file, caption="Aperçu du document", width=300)
+        st.image(uploaded_file, caption="Aperçu", width=300)
 
-if st.button("🚀 Analyser et Générer le Guide"):
-    
+# Action
+if st.button("🚀 Générer le Guide PDF", type="primary"):
     has_content = (input_method == "📝 Texte (Copier-Coller)" and text_input) or \
                   (input_method == "📷 Photo (Upload)" and uploaded_file)
                   
     if not has_content:
-        st.warning("Veuillez fournir un texte ou une image avant de lancer l'analyse.")
+        st.warning("Veuillez fournir un document.")
     else:
-        with st.spinner("Envoi à n8n -> Upload Cloudinary -> Analyse GPT-4o..."):
+        with st.spinner("Analyse intelligente en cours..."):
             result_text = call_n8n(text_input, uploaded_file, language=langue)
             
-            st.success("Analyse terminée !")
-            st.markdown("---")
-            st.subheader("Aperçu du Guide :")
-            st.text_area("Résultat", value=result_text, height=400)
+            # Colonnes pour afficher côte à côte résultat et bouton
+            col1, col2 = st.columns([2, 1])
             
-            try:
-                pdf_bytes = create_beautiful_pdf(result_text, langue)
-                
+            with col1:
+                st.success("Analyse terminée !")
+                st.text_area("Aperçu du texte", value=result_text, height=300)
+            
+            with col2:
+                st.markdown("### Téléchargement")
+                st.write("Votre document officiel est prêt.")
+                # PDF
+                pdf_bytes = create_pdf(result_text)
                 st.download_button(
-                    label="📥 Télécharger le PDF Design",
+                    label="📄 Télécharger PDF",
                     data=pdf_bytes,
-                    file_name="Guide_Sortie_Patient.pdf",
+                    file_name=f"Guide_Sortie_{datetime.now().strftime('%Y%m%d')}.pdf",
                     mime="application/pdf"
                 )
-            except Exception as e:
-                st.error(f"Erreur génération PDF: {str(e)}")
