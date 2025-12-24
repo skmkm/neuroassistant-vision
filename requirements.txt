@@ -5,3 +5,4 @@ arabic-reshaper
 python-bidi
 Pillow
 cloudinary
+reportlab
