@@ -174,7 +174,7 @@ def create_beautiful_pdf(text_content, language="Français"):
         c.setFillColor(colors.HexColor('#7F8C8D'))
         c.setFont("Helvetica", 8)
         c.drawCentredString(width/2, 1.5*cm, f"Page {page_num}")
-        c.drawString(2*cm, 1.5*cm, "CHU Hassan II")
+        c.drawString(2*cm, 1.5*cm, "Hopital Militaire Avicenne de Marrakech")
     
     # === TRAITEMENT DU CONTENU ===
     draw_header()
@@ -301,8 +301,6 @@ def create_beautiful_pdf(text_content, language="Français"):
         
         # === ALERTES ET MOTS-CLÉS ===
         if any(keyword in line.upper() for keyword in ['ATTENTION', 'ALERTE', 'IMPORTANT', 'URGENCE', 'تنبيه', 'مهم']):
-            c.setFillColor(colors.HexColor('#FFEBEE'))
-            
             font_size = 11
             
             if is_arabic_text and has_arabic_font:
@@ -313,9 +311,10 @@ def create_beautiful_pdf(text_content, language="Français"):
                 c.setFont("Helvetica-Bold", font_size)
                 wrapped_lines = wrap_text_latin(line, c, "Helvetica-Bold", font_size, max_text_width)
             
-            # Dessiner le fond pour toutes les lignes
-            box_height = len(wrapped_lines) * line_height + 0.2*cm
-            c.roundRect(margin_left - 0.3*cm, y_position - 0.1*cm, 
+            # Dessiner le fond SEULEMENT pour les lignes de texte (pas au-dessus)
+            box_height = len(wrapped_lines) * line_height
+            c.setFillColor(colors.HexColor('#FFEBEE'))
+            c.roundRect(margin_left - 0.3*cm, y_position - box_height + 0.4*cm, 
                        margin_right - margin_left + 0.6*cm, box_height, 
                        0.1*cm, fill=1, stroke=0)
             
